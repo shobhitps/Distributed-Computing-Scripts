@@ -5,7 +5,7 @@ Automatic assignment handler for Mlucas and CUDALucas.
 
 [*] Revised by Teal Dulcet and Daniel Connelly for CUDALucas (2020)
     Original Authorship(s):
-     * # EWM: adapted from https://github.com/MarkRose/primetools/blob/master/mfloop.py 
+     * # EWM: adapted from https://github.com/MarkRose/primetools/blob/master/mfloop.py
             by teknohog and Mark Rose, with help rom Gord Palameta.
      * # 2020: support for computer registration and assignment-progress via
             direct Primenet-v5-API calls by Loïc Le Loarer <loic@le-loarer.org>
@@ -54,6 +54,7 @@ from hashlib import sha256
 import json
 import platform
 import logging
+from datetime import timedelta
 try:
     import requests
 except ImportError:
@@ -95,9 +96,7 @@ else:
 
 
 s = requests.Session()  # session that maintains our cookies
-
-# [***] Daniel Connelly's functions
-
+s.raise_for_status()
 
 # get assignment
 def ga(guid):
@@ -106,6 +105,7 @@ def ga(guid):
     args["g"] = guid
     args["c"] = options.cpu
     args["a"] = ""
+
     return args
 
 
@@ -137,6 +137,7 @@ def program_options(guid):
     args["t"] = "po"
     args["g"] = guid
     args["c"] = ""  # no value updates all cpu threads with given worktype
+    #args["c"] = options.cpu_model[:64]  # CPU model (len between 8 and 64)
     args["w"] = options.worktype if config.has_option("primenet", "first_time") is False \
         or hasattr(opts_no_defaults, "worktype") else ""
     # args["nw"] = 1
@@ -148,6 +149,9 @@ def program_options(guid):
     # args["DayStartTime"] = 0
     # args["NightStartTime"] = 0
     # args["RunOnBattery"] = 1
+    if options.worktype == "150":
+        args["dc"] = True
+
     result = send_request(guid, args)
     config_updated = False
     if result is None or int(result["pnErrorResult"]) != 0:
@@ -382,17 +386,6 @@ def primenet_fetch(num_to_get):
     #  160						PRP on Mersenne cofactors
     #  161						PRP double-checks on Mersenne cofactors
 
-    # Convert mnemonic-form worktypes to corresponding numeric value, check worktype value vs supported ones:
-    option_dict = {"SmallestAvail": "100", "DoubleCheck": "101", "WorldRecord": "102", "100Mdigit": "104",
-                   "SmallestAvailPRP": "150", "DoubleCheckPRP": "151", "WorldRecordPRP": "152", "100MdigitPRP": "153"}
-    if options.worktype in option_dict:  # this and the above line of code enables us to use words or numbers on the cmdline
-        options.worktype = option_dict[options.worktype]
-    supported = set(['100', '101', '102', '104', '150', '151', '152', '153']
-                    ) if program == "MLucas" else set(['100', '101', '102', '104'])
-    if options.worktype not in supported:
-        debug_print("Unsupported/unrecognized worktype = " +
-                    options.worktype + " for " + program)
-        return []
     try:
         # Get assignment (Loarer's way)
         if options.password:
@@ -406,7 +399,7 @@ def primenet_fetch(num_to_get):
             ))
             openurl = primenet_baseurl + "manual_assignment/?"
             debug_print("Fetching work via URL = " +
-                        openurl + urlencode(assignment))
+                        openurl)
             r = s.post(openurl, data=assignment)
             return greplike(workpattern, [line.decode('utf-8', 'replace') for line in r.iter_lines()])
 
@@ -415,10 +408,12 @@ def primenet_fetch(num_to_get):
             guid = get_guid(config)
             assignment = ga(guid)  # get assignment
             debug_print("Fetching work via V5 Primenet = " +
-                        primenet_v5_burl + urlencode(assignment))
+                        primenet_v5_burl)
             tests = []
             for _ in range(num_to_get):
                 r = send_request(guid, assignment)
+                print(r)
+                sys.exit(0)
                 if r is None or int(r["pnErrorResult"]) != 0:
                     debug_print(
                         "ERROR while requesting an assignment on mersenne.org", file=sys.stderr)
@@ -432,12 +427,25 @@ def primenet_fetch(num_to_get):
                 # if options.worktype == DC
                 elif r['w'] in set(['101']):
                     tests.append("DoubleCheck="+",".join([r[i] for i in ['k', 'n', 'sf', 'p1']]))
-                # if PRP type testing, first time
-                elif r['w'] in set(['150', '152', '153']):
-                    tests.append("PRP="+",".join([r[i] for i in ['k', 'b', 'n', 'c', 'sf', 'saved']]))
+                # if PRP type testing
+                else:
+                    #elif r['w'] in set(['150', '152', '153']): # first time PRP testing
+                    # First time PRP testing ex: {'pnErrorResult': '0', 'pnErrorDetail': 'Server assigned PRP work.', 'g': '9cdb3b6d7830480f8c6dc72b0031a596', 'k': '5BC612AFFDE0833573E362F529FFE96D', 'A': '1', 'b': '2', 'n': '109947881', 'c': '-1', 'w': '150', 'sf': '77', 'saved': '0'}
+                    #tests.append("PRP="+",".join([r[i] for i in ['k', 'A', 'b', 'n', 'c', 'sf', 'saved']]))
+
+                    # DC PRP ex: {'pnErrorResult': '0', 'pnErrorDetail': 'Server assigned PRPDC work.', 'g': '9cdb3b6d7830480f8c6dc72b0031a596', 'k': '09E5AFD72C294DB43F13384049C3D46E', 'A': '1', 'b': '2', 'n': '84297779', 'c': '-1', 'w': '150', 'sf': '76', 'saved': '0', 'base': '3', 'rt': '1', 'dc': '1'}
+                    prp_str = "PRPDC=" if "dc" in r else "PRP="
+                    # https://github.com/shafferjohn/Prime95/blob/1f072249d0106812144060f8da4d5fb11a8a9baf/commonc.c#L3212-L3217
+                    prp_str += ",".join([r[i] for i in ['k', 'A', 'b', 'n', 'c']])
+                    prp_str += ",".join([r[i] for i in ['sf', 'saved']]) if int(r['saved']) > 0 or bool(r['base']) or bool(r['rt']) else ""
+                    prp_str += ",".join([r[i] for i in ['base', 'rt']]) if bool(r['base']) or bool(r['rt']) else ""
+
+                    tests.append(prp_str)
+
                 # if PRP-DC (probable-primality double-check) testing
-                elif r['w'] in set(['151']):
-                    tests.append("PRP="+",".join([r[i] for i in ['k', 'b', 'n', 'c', 'sf', 'saved', 'base', 'rt']]))
+
+                #elif r['w'] in set(['151']):
+                #    tests.append("PRP="+",".join([r[i] for i in ['k', 'A', 'b', 'n', 'c', 'sf', 'saved', 'base', 'rt']]))
 
             return tests
     except ConnectionError:
@@ -542,10 +550,12 @@ def send_request(guid, args):
     args["g"] = guid
     # to mimic mprime, it is necessary to add safe='"{}:,' argument to urlencode, in
     # particular to encode JSON in result submission. But safe is not supported by python2...
-    url_args = urlencode(args)
-    url_args += "&ss=19191919&sh=ABCDABCDABCDABCDABCDABCDABCDABCD"
+    args["ss"] = "19191919"
+    args["sh"] = "ABCDABCDABCDABCDABCDABCDABCDABCD"
+
     try:
-        r = requests.get(primenet_v5_burl+url_args)
+        r = requests.get(primenet_v5_burl, args)
+        r.raise_for_status()
         result = parse_v5_resp(r.text)
         rc = int(result["pnErrorResult"])
         if rc:
@@ -791,11 +801,27 @@ def get_progress_assignment(task):
     if not options.gpu:
         iteration, usec_per_iter = parse_stat_file(p)
     else:
-        iteration, usec_per_iter = parse_stat_file_cuda()
+        iteration, usec_per_iter = parse_stat_file_cuda(p)
     return Assignment(assignment_id, p, is_prp, iteration, usec_per_iter)
 
+def convert_to_ms(timestamp):
+    arr = list(map(int,timestamp.split(":")))
+    # days, hours, minutes, seconds
+    if len(arr) == 4:
+        return float(timedelta(days=arr[0], hours=arr[1], minutes=arr[2], seconds=arr[3]).total_seconds()) * 1000
 
-def parse_stat_file_cuda():
+    # hours, minutes, seconds
+    elif len(arr) == 3:
+        return float(timedelta(hours=arr[0], minutes=arr[1], seconds=arr[2]).total_seconds()) * 1000
+
+    # minutes, seconds
+    elif len(arr) == 2:
+        return float(timedelta(minutes=arr[0], seconds=arr[1]).total_seconds()) * 1000
+
+    else:
+        return float(arr[0]) * 1000
+
+def parse_stat_file_cuda(p):
     # CUDALucas only function
     # appended line by line, no lock needed
     if os.path.exists(options.gpu) == False:
@@ -805,8 +831,10 @@ def parse_stat_file_cuda():
     w = readonly_list_file(options.gpu)
     found = 0
     iter_regex = re.compile(r'\b\d{5,}\b')
-    ms_per_regex = re.compile(r'\b\d+\.\d+\b')
+    #ms_per_regex = re.compile(r'\b\d+\.\d+\b')
+    ms_per_regex = re.compile(r'\b\d*\:*\d*\:*\d+\:+\d+')
     list_msec_per_iter = []
+
     # get the 5 most recent Iter line
     for line in reversed(w):
         iter_res = re.findall(iter_regex, line)
@@ -817,10 +845,13 @@ def parse_stat_file_cuda():
             found += 1
             # keep the last iteration to compute the percent of progress
             if found == 1:
-                iteration = int(iter_res[1])
-            elif int(iter_res[1]) > iteration:
+                iteration = int(iter_res[0])
+            elif int(iter_res[0]) > iteration:
                 break
-            msec_per_iter = float(ms_res[1])
+            debug_print(float(re.findall(re.compile(r'\b\d+\.\d+\b'), line)[1]))
+            msec_per_iter = convert_to_ms(ms_res[1])/ (p - iteration)
+            #msec_per_iter = float(ms_res[1])
+            print(msec_per_iter)
             list_msec_per_iter.append(msec_per_iter)
             if found == 5:
                 break
@@ -904,20 +935,29 @@ def get_cuda_ar_object(sendline):
     # CUDALucas only function
 
     # sendline example: 'M( 108928711 )C, 0x810d83b6917d846c, offset = 106008371, n = 6272K, CUDALucas v2.06, AID: 02E4F2B14BB23E2E4B95FC138FC715A8'
+    # sendline example: 'M( 108928711 )P, offset = 106008371, n = 6272K, CUDALucas v2.06, AID: 02E4F2B14BB23E2E4B95FC138FC715A8'
     ar = {}
     # args example: ['M( 108928711 )C', '0x810d83b6917d846c', 'offset = 106008371', 'n = 6272K', 'CUDALucas v2.06', 'AID: 02E4F2B14BB23E2E4B95FC138FC715A8']
     args = ([x.strip() for x in sendline.split(",")])
+    ar['aid'] = args[-1].strip("AID: ") if "AID" in args[-1] else ""
 
-    ar['aid'] = args[5][5:]
-    ar['worktype'] = 'LL'  # CUDAlucas only does LL tests
-    # the else does not matter in Loarer's program
-    ar['status'] = 'P' if int(args[1], 0) == 0 else 'R'
-    ar['exponent'] = re.search(r'\d{5,}', args[0]).group(0)
+    if args[0][-1] == "P":
+        ar['worktype'] = 'LL'  # CUDAlucas only does LL tests
+        ar['status'] = 'P'
+        ar['exponent'] = re.search(r'\d{5,}', args[0]).group(0)
 
-    ar['res64'] = args[1][2:]
-    ar['shift-count'] = args[2].strip("offset = ")
-    ar['error-code'] = "00000000"
-    ar['fft-length'] = str(int(args[3].strip("n = ").strip("K")) * 1000)
+        ar['shift-count'] = args[1].strip("offset = ")
+        ar['error-code'] = "00000000"
+        ar['fft-length'] = str(int(args[2].strip("n = ").strip("K")) * 1024)
+    else: # C
+        ar['worktype'] = 'LL'  # CUDAlucas only does LL tests
+        ar['status'] = 'R'
+        ar['exponent'] = re.search(r'\d{5,}', args[0]).group(0)
+
+        ar['res64'] = args[1][2:]
+        ar['shift-count'] = args[2].strip("offset = ")
+        ar['error-code'] = "00000000"
+        ar['fft-length'] = str(int(args[3].strip("n = ").strip("K")) * 1024)
     return ar
 
 
@@ -1274,8 +1314,28 @@ if options.unreserve_all:
 	sys.exit(0)
 
 program = "CUDALucas" if options.gpu else "MLucas"
+
+# TODO - uncomment
+'''
+# Convert mnemonic-form worktypes to corresponding numeric value, check worktype value vs supported ones:
+option_dict = {"SmallestAvail": "100", "DoubleCheck": "101", "WorldRecord": "102", "100Mdigit": "104",
+               "SmallestAvailPRP": "150", "DoubleCheckPRP": "151", "WorldRecordPRP": "152", "100MdigitPRP": "153"}
+if options.worktype in option_dict:  # this and the above line of code enables us to use words or numbers on the cmdline
+    options.worktype = option_dict[options.worktype]
+supported = set(['100', '101', '102', '104', '150', '151', '152', '153']
+                ) if program == "MLucas" else set(['100', '101', '102', '104'])
+if options.worktype not in supported:
+    debug_print("Unsupported/unrecognized worktype = " +
+                options.worktype + " for " + program)
+    sys.exit(2)
+'''
+
 while True:
-    # Carry on with Loarer's style of primenet
+    #assignment = ga(guid)  # get assignment
+    #primenet_fetch(1)
+    #r = send_request(guid, assignment)
+   # print(r)
+   # sys.exit(0)
     try:
         if options.password:
             login_data = {"user_login": options.username,
